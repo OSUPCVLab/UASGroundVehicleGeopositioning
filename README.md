@@ -3,7 +3,9 @@
 ## Set up
 ### copy this repo
 1. Use the command line interface as follows:
+
 `$ git clone https://github.com/OSUPCVLab/VehicleGeopositioning.git`
+
 `$ cd VehicleGeopositioning`
 
 ### Google API
