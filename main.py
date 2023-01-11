@@ -13,7 +13,7 @@ from SuperGluePretrainedNetwork.models.matching import Matching
 from SuperGluePretrainedNetwork.models.utils import read_image
 
 
-model_path = 'best_3.pt'
+model_path = 'car_detection_model.pt'
 model_conf = 0.65
 mapPath = 'currentLocation.png'
 dim = 2496
