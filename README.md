@@ -1,7 +1,7 @@
 # VehicleGeopositioning
 
 ## Set up
-### copy this repo
+### Copy this Repo
 1. Use the command line interface as follows:
 
 `$ git clone https://github.com/OSUPCVLab/VehicleGeopositioning.git`
