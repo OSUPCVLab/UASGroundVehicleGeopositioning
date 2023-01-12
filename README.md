@@ -1,14 +1,18 @@
 # VehicleGeopositioning
 
 ## Set up
-### Copy this Repo
-1. Use the command line interface as follows:
+### Copy this Repo and SuperGlue's repo
+Run the following commands to clone this repo and SuperGlue's repo:
 
 `$ git clone https://github.com/OSUPCVLab/VehicleGeopositioning.git`
 
 `$ cd VehicleGeopositioning`
 
+`$ git clone https://github.com/magicleap/SuperGluePretrainedNetwork.git`
+
 ### Setup Dependancies
+Run the following commands to set up the dependancies:
+`$ pip3 install -r requirements.txt`
 
 ### Google API
 1. Get a google maps API key. Use the following link to set up the api key. Make sure you copy it (do not share API keys, each person should use their own)
