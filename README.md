@@ -8,6 +8,8 @@
 
 `$ cd VehicleGeopositioning`
 
+### Setup Dependancies
+
 ### Google API
 1. Get a google maps API key. Use the following link to set up the api key. Make sure you copy it (do not share API keys, each person should use their own)
 [https://developers.google.com/maps/documentation/embed/get-api-key](https://developers.google.com/maps/documentation/embed/get-api-key)
