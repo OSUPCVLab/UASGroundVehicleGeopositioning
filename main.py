@@ -64,8 +64,8 @@ def inference_with_sahi(img):
 
 def parseArgs():
     parser = argparse.ArgumentParser(description='Collect values to determine GPS position')
-    parser.add_argument('--framesDir', type=str, default='residential_01/frames', help='where to get drone images from')
-    parser.add_argument('--dataDir', type=str, default='residential_01/paras', help='where to get drone data from for reach frame')
+    parser.add_argument('--framesDir', type=str, default='sampleData/images', help='where to get drone images from')
+    parser.add_argument('--dataDir', type=str, default='sampleData/params', help='where to get drone data from for reach frame')
 
     args = parser.parse_args()
     print('directory with frames:', args.framesDir)
@@ -88,8 +88,11 @@ def getParams(filePath):
 
 def grabNewGoogleMapsImage(pos, fileName):
     response = requests.get(f'https://maps.googleapis.com/maps/api/staticmap?center={pos[0]},{pos[1]}&zoom=20&size=1920x1080&maptype=satellite&key={keys.GOOGLE_API_KEY}')
-    with open(fileName, 'wb') as file:
-        file.write(response.content)
+    if response.status_code == 200:    
+        with open(fileName, 'wb') as file:
+            file.write(response.content)
+    else:
+        print('error with Google API, check that API key is correct')
 
 def googleMapsImageNeedsToUpdate(lastUpdatedPos, pos):
     return np.sqrt((lastUpdatedPos[0] - pos[0])**2 + (lastUpdatedPos[1] - pos[1])**2) > 0.0002
@@ -210,9 +213,9 @@ def main():
                 
                 c += 1
                 
-            print(f'added {c} cars')
+            print(f'found {c} cars in {frame}')
         
-        map.save('superglue_multi.html')
+        map.save('multiple_frames.html')
         
         
             
