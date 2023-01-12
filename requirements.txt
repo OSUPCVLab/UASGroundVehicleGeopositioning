@@ -1,2 +1,3 @@
 yolov5==6.2.2
 sahi==0.10.7
+folium
