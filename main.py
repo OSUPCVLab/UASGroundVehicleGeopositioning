@@ -17,9 +17,10 @@ from SuperGluePretrainedNetwork.models.utils import read_image
 model_path = 'car_detection_model.pt'
 model_conf = 0.65
 mapPath = 'currentLocation.png'
-dim = 2496
+dimOfImage = 2496
+dimOfResizedImage = 640
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-imgPixelCenter = (320, 320)
+imgPixelCenter = (dimOfResizedImage / 2, dimOfResizedImage / 2)
 
 latAtZoom20 = 40.01298216829920000 - 40.01232546913910000
 
@@ -29,7 +30,7 @@ opt = {'nms_radius' : 4,
         'superglue' : 'outdoor',
         'sinkhorn_iterations' : 20,
         'match_threshold' : 0.8,
-        'resize' : [640, 640],
+        'resize' : [dimOfResizedImage, dimOfResizedImage],
         'resize_float' : True}
 
 config = {
@@ -135,8 +136,8 @@ def findHomographyUsingNN(srcPath, dstPath):
     image0 = cv2.imread(srcPath)
     image1 = cv2.imread(dstPath)
 
-    image0 = cv2.resize(image0, [640, 640])
-    image1 = cv2.resize(image1, [640, 640])
+    image0 = cv2.resize(image0, [dimOfResizedImage, dimOfResizedImage])
+    image1 = cv2.resize(image1, [dimOfResizedImage, dimOfResizedImage])
 
     H, _ = cv2.findHomography(src, dst, cv2.RANSAC, 5)
     
@@ -154,8 +155,8 @@ def calculateGPSPosOfObject(center, imgPixelCenter, pos, height):
     
     long_factor = 1 / math.cos(lat * math.pi/180)
     
-    xcord = xDistFromCenter*latAtZoom20*long_factor/640 + long
-    ycord = yDistFromCenter*latAtZoom20/640 + lat
+    xcord = xDistFromCenter*latAtZoom20*long_factor/dimOfResizedImage + long
+    ycord = yDistFromCenter*latAtZoom20/dimOfResizedImage + lat
     
     return (ycord, xcord)
     
@@ -192,7 +193,7 @@ def main():
             droneImage = cv2.imread(frame)
             
             image = cv2.cvtColor(droneImage, cv2.COLOR_BGR2RGB)
-            image = cv2.resize(image, (dim, dim))
+            image = cv2.resize(image, (dimOfImage, dimOfImage))
             
             results = inference_with_sahi(image)
             
@@ -204,8 +205,8 @@ def main():
                 x1 = result.bbox.minx + ((result.bbox.maxx - result.bbox.minx) / 2)
                 y1 = result.bbox.miny + ((result.bbox.maxy - result.bbox.miny) / 2)
                 
-                x1 = 640 * x1 / 2496
-                y1 = 640 * y1 / 2496
+                x1 = dimOfResizedImage * x1 / dimOfImage
+                y1 = dimOfResizedImage * y1 / dimOfImage
                 
                 x = (x1*H[0,0] + y1*H[0,1] + H[0,2])/(x1*H[2,0] + y1*H[2,1] + H[2,2])
                 y = (x1*H[1,0] + y1*H[1,1] + H[1,2])/(x1*H[2,0] + y1*H[2,1] + H[2,2])
