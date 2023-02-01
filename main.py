@@ -19,7 +19,6 @@ model_conf = 0.65
 mapPath = 'currentLocation.png'
 dim = 2496
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-adjustmentFactor = 0.000000015
 imgPixelCenter = (320, 320)
 
 latAtZoom20 = 40.01298216829920000 - 40.01232546913910000
@@ -187,6 +186,7 @@ def main():
         
         if fileFound:
             if googleMapsImageNeedsToUpdate(lastUpdatedPos, pos):
+                print('grabbing new google maps image')
                 grabNewGoogleMapsImage(pos, 'currentLocation.png')
             
             droneImage = cv2.imread(frame)
@@ -219,9 +219,8 @@ def main():
                 c += 1
                 
             print(f'found {c} cars in {frame}')
-            map.save('single_frame.html')
         
-        map.save('multiple_frames.html')
+    map.save('multiple_frames.html')
 
 if __name__ == "__main__":
     main()
