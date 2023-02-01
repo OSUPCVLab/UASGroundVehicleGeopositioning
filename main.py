@@ -1,3 +1,4 @@
+import math
 import cv2
 import requests
 import argparse
@@ -19,8 +20,9 @@ mapPath = 'currentLocation.png'
 dim = 2496
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 adjustmentFactor = 0.000000015
-xFactor = 1.3
 imgPixelCenter = (320, 320)
+
+latAtZoom20 = 40.01298216829920000 - 40.01232546913910000
 
 opt = {'nms_radius' : 4,
         'keypoint_threshold' : 0.005,
@@ -92,7 +94,8 @@ def grabNewGoogleMapsImage(pos, fileName):
         with open(fileName, 'wb') as file:
             file.write(response.content)
     else:
-        print('error with Google API, check that API key is correct')
+        print('\nERROR:',response.text,'\n')
+        exit() 
 
 def googleMapsImageNeedsToUpdate(lastUpdatedPos, pos):
     return np.sqrt((lastUpdatedPos[0] - pos[0])**2 + (lastUpdatedPos[1] - pos[1])**2) > 0.0002
@@ -150,8 +153,10 @@ def calculateGPSPosOfObject(center, imgPixelCenter, pos, height):
     lat = pos[0]
     long = pos[1]
     
-    xcord = xFactor*xDistFromCenter*adjustmentFactor*height + long
-    ycord = yDistFromCenter*adjustmentFactor*height + lat
+    long_factor = 1 / math.cos(lat * math.pi/180)
+    
+    xcord = xDistFromCenter*latAtZoom20*long_factor/640 + long
+    ycord = yDistFromCenter*latAtZoom20/640 + lat
     
     return (ycord, xcord)
     
@@ -214,13 +219,9 @@ def main():
                 c += 1
                 
             print(f'found {c} cars in {frame}')
+            map.save('single_frame.html')
         
         map.save('multiple_frames.html')
-        
-        
-            
-    
-    
 
 if __name__ == "__main__":
     main()
