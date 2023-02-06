@@ -20,9 +20,9 @@ Run the following commands to set up the dependancies:
 [https://developers.google.com/maps/documentation/embed/get-api-key](https://developers.google.com/maps/documentation/embed/get-api-key)
 2. Open the `keys.py` document and paste in your API key into the `GOOGLE_API_KEY` field 
 
-### Running the code
+## Running the code
 1. `main.py` there is the script which runs everything. To run in simpily type `python3 main.py` into the command line.
-2. There are two predefined arguments `--framesDir` and `--dataDir`. Currently there are defined to point to the sample data. The convention is that if an image `data/images/img.png` exists, then there is a corresponding `data/parameters/img.txt` that supplies meta data for the image. Each image's meta data should provide the same information in the same format as currently exists in the sample data. 
+2. Here is how to use custom data. There are two predefined arguments `--framesDir` and `--dataDir`. Currently there are defined to point to the sample data. The convention is that if an image `data/images/img.png` exists, then there is a corresponding `data/parameters/img.txt` that supplies meta data for the image. Each image's meta data should provide the same information in the same format as currently exists in the sample data. 
 ex. `GPS = 40.01265351729508,-83.00969233386985
 height = 70
 rotation = 0`
