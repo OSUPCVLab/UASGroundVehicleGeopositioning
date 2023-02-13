@@ -29,7 +29,7 @@ opt = {'nms_radius' : 4,
         'max_keypoints' : 2048,
         'superglue' : 'outdoor',
         'sinkhorn_iterations' : 20,
-        'match_threshold' : 0.8,
+        'match_threshold' : 0.6,
         'resize' : [dimOfResizedImage, dimOfResizedImage],
         'resize_float' : True}
 
@@ -89,13 +89,45 @@ def getParams(filePath):
     return pos, height
 
 def grabNewGoogleMapsImage(pos, fileName):
-    response = requests.get(f'https://maps.googleapis.com/maps/api/staticmap?center={pos[0]},{pos[1]}&zoom=20&size=1920x1080&maptype=satellite&key={keys.GOOGLE_API_KEY}')
-    if response.status_code == 200:    
-        with open(fileName, 'wb') as file:
-            file.write(response.content)
-    else:
-        print('\nERROR:',response.text,'\n')
-        exit() 
+    try:
+        satMapRequest = requests.get(f'https://maps.googleapis.com/maps/api/staticmap?center={pos[0]},{pos[1]}&zoom=20&size=1920x1080&maptype=satellite&key={keys.GOOGLE_API_KEY}', stream=True).raw
+        terrainMapRequest = requests.get(f'https://maps.googleapis.com/maps/api/staticmap?center={pos[0]},{pos[1]}&zoom=20&size=1920x1080&maptype=terrain&key={keys.GOOGLE_API_KEY}', stream=True).raw
+        
+        if satMapRequest.status == 200 and terrainMapRequest.status == 200:
+                
+            #turn the responses into images
+            satMapImage = np.asarray(bytearray(satMapRequest.read()), dtype="uint8")
+            satMapImage = cv2.imdecode(satMapImage, cv2.IMREAD_COLOR)
+            terrainMapImage = np.asarray(bytearray(terrainMapRequest.read()), dtype="uint8")
+            terrainMapImage = cv2.imdecode(terrainMapImage, cv2.IMREAD_COLOR)
+            
+            # crop out regions that don't work
+            white = np.where(
+            (terrainMapImage[:, :, 0] > 253) & 
+            (terrainMapImage[:, :, 1] > 253) & 
+            (terrainMapImage[:, :, 2] > 253)
+            )
+            mask = np.zeros(satMapImage.shape)
+            mask[white] = 255
+            kernel = np.ones((25, 25), np.uint8)
+            img_dilation = cv2.dilate(mask, kernel, iterations=4)
+
+            # set those pixels to black
+            satMapImage[np.where(
+            (img_dilation[:, :, 0] < 254) & 
+            (img_dilation[:, :, 1] < 254) & 
+            (img_dilation[:, :, 2] < 254)
+            )] = [0, 0, 0]
+            
+            cv2.imwrite(fileName, satMapImage)
+                
+        else:
+            print('\nERROR(s):',satMapRequest.text, '\n', terrainMapRequest.text, '\n')
+            exit()
+    except requests.exceptions.RequestException as e:
+        raise SystemExit(e)
+    
+        
 
 def googleMapsImageNeedsToUpdate(lastUpdatedPos, pos):
     return np.sqrt((lastUpdatedPos[0] - pos[0])**2 + (lastUpdatedPos[1] - pos[1])**2) > 0.0002
@@ -221,7 +253,7 @@ def main():
                 
             print(f'found {c} cars in {frame}')
         
-    map.save('multiple_frames.html')
+    map.save('multiple_frames_croppingMapsImage.html')
 
 if __name__ == "__main__":
     main()
