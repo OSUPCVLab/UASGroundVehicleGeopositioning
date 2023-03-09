@@ -11,6 +11,7 @@ import numpy as np
 from sahi.model import Yolov5DetectionModel
 from sahi.predict import get_sliced_prediction
 from SuperGluePretrainedNetwork.models.matching import Matching
+import matplotlib.pyplot as plt
 
 
 model_path = 'car_detection_model.pt'
@@ -67,8 +68,8 @@ def inference_with_sahi(img):
 #this lets us determine where to grab the images and meta data
 def parseArgs():
     parser = argparse.ArgumentParser(description='Collect values to determine GPS position')
-    parser.add_argument('--framesDir', type=str, default='miniSample/images', help='where to get drone images from')
-    parser.add_argument('--dataDir', type=str, default='miniSample/params', help='where to get drone data from for reach frame')
+    parser.add_argument('--framesDir', type=str, default='sampleData/images', help='where to get drone images from')
+    parser.add_argument('--dataDir', type=str, default='sampleData/params', help='where to get drone data from for reach frame')
     # parser.add_argument('--framesDir', type=str, default='sampleData/images', help='where to get drone images from')
     # parser.add_argument('--dataDir', type=str, default='sampleData/params', help='where to get drone data from for reach frame')
 
@@ -186,6 +187,60 @@ def calculateGPSPosOfObject(center, imgPixelCenter, pos):
     ycord = yDistFromCenter*latAtZoom20/dimOfResizedImage + lat
     
     return (ycord, xcord)
+
+def computeCascadingHomography(H_a, H_b, newDetections, pastDetections):
+    # blankImageNew = np.zeros((dimOfResizedImage,dimOfResizedImage))
+    # blankImagePast = np.zeros((dimOfResizedImage,dimOfResizedImage))
+    pts_src = []
+    pts_dst = []
+    for detection in newDetections:
+        if detection[0] < dimOfResizedImage and detection[1] < dimOfResizedImage: 
+            # blankImageNew[detection[1], detection[0]] = 1
+            pts_src.append([detection[1], detection[0]])
+    
+    
+    if H_b is not None and pastDetections is not None:
+        valid_dst_points = []
+        for detection in pastDetections:
+            if detection[0] < dimOfResizedImage and detection[1] < dimOfResizedImage:
+                # blankImageNew[detection[1], detection[0]] = 0.5
+                valid_dst_points.append([detection[1], detection[0]])
+                
+        
+        for src_point in pts_src:
+            closestPoint = pastDetections[closest_point_idx(src_point, valid_dst_points)]
+            pts_dst.append([closestPoint[0], closestPoint[1]])
+        
+        for a,b in zip(pts_src, pts_dst):
+            plt.plot(a,b)
+        plt.savefig('fig.png')
+        
+        H_a_to_b, _ = cv2.findHomography(np.array(pts_src), np.array(pts_dst))
+        
+        if H_a_to_b is not None:
+            modified_detections = []
+            for src_point in pts_src:
+                modified_detections.append(applyHomographyToPoint(H_a_to_b, src_point[0], src_point[1]))
+            newDetections = modified_detections
+        
+        
+    
+    # cv2.imshow('points', blankImageNew)
+    # cv2.waitKey()
+    return H_a, newDetections
+
+def applyHomographyToPoint(H, x1, y1):
+    # compute new pixel positions using homography
+    x = (x1*H[0,0] + y1*H[0,1] + H[0,2])/(x1*H[2,0] + y1*H[2,1] + H[2,2])
+    y = (x1*H[1,0] + y1*H[1,1] + H[1,2])/(x1*H[2,0] + y1*H[2,1] + H[2,2])
+    
+    return (int(x), int(y))
+
+def closest_point_idx(point_a, points_b):
+    points_b = np.asarray(points_b)
+    dist_2 = np.sum((points_b - point_a)**2, axis=1)
+    return np.argmin(dist_2)
+    
     
 def main():
     args = parseArgs()
@@ -202,12 +257,23 @@ def main():
     lastUpdatedPos = pos
     
     colors= ['#0080bb','#aa0000', '#00aa00', '#aaaa00', '#999999', '#010101', '#8000bb']
-    for i, frame in enumerate(frameFiles):
+    
+    H_a = None
+    H_b = None
+    pastDetections = None
+    newDetections = None
+    i = 0
+    
+    for frame in frameFiles:
         
         fileFound = True
         paramPath = None
         pos = None
         rot = None
+        
+        H_b = H_a
+        pastDetections = newDetections
+        
         try:
             paramPath = frame.replace(args.framesDir, args.dataDir).replace('png', 'txt')
             pos, rot = getParams(paramPath)
@@ -217,7 +283,11 @@ def main():
         if fileFound:
             if googleMapsImageNeedsToUpdate(lastUpdatedPos, pos):
                 print('grabbing new google maps image')
+                lastUpdatedPos = pos
                 grabNewGoogleMapsImage(pos, 'currentLocation.png')
+                H_b = None
+                pastDetections = None
+                i += 1
             
             droneImage = cv2.imread(frame)
             
@@ -227,9 +297,9 @@ def main():
             results = inference_with_sahi(image)
             
             rot_mat = cv2.getRotationMatrix2D(imgPixelCenter, -rot, 1.0)
-            H = findHomographyUsingNN(frame, mapPath, rot)
             
-            c = 0
+            H_a = findHomographyUsingNN(frame, mapPath, rot)
+            newDetections = []
             
             for result in results.object_prediction_list:
                 x1 = result.bbox.minx + ((result.bbox.maxx - result.bbox.minx) / 2)
@@ -240,15 +310,16 @@ def main():
                 
                 # rotate the detections
                 rotated_point = rot_mat.dot(np.array((x1,y1) + (1,)))
-                x1,y1 = int(rotated_point[0]), int(rotated_point[1])
+                x1, y1 = int(rotated_point[0]), int(rotated_point[1])
                 
-                # compute new pixel positions using homography
-                x = (x1*H[0,0] + y1*H[0,1] + H[0,2])/(x1*H[2,0] + y1*H[2,1] + H[2,2])
-                y = (x1*H[1,0] + y1*H[1,1] + H[1,2])/(x1*H[2,0] + y1*H[2,1] + H[2,2])
+                newDetections.append(applyHomographyToPoint(H_a, x1, y1))
                 
-                center = (int(x), int(y))
+            H_a, newDetections = computeCascadingHomography(H_a, H_b, newDetections, pastDetections)
+            
+            c = 0
+            for detection in newDetections:
                 
-                dis = calculateGPSPosOfObject(center, imgPixelCenter, pos)
+                dis = calculateGPSPosOfObject(detection, imgPixelCenter, pos)
                 
                 folium.CircleMarker(dis, radius=1, color=colors[i], fill_color=colors[i]).add_to(map)
                 
@@ -256,7 +327,7 @@ def main():
                 
             print(f'found {c} cars in {frame}')
         
-    map.save('multiple_frames_large_area.html')
+    map.save('multiple_frames__larger_area_cascading_homography.html')
 
 if __name__ == "__main__":
     main()
