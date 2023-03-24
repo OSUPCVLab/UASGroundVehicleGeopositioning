@@ -24,7 +24,8 @@ imgPixelCenter = (dimOfResizedImage / 2, dimOfResizedImage / 2)
 latAtZoom20 = 40.01298216829920000 - 40.01232546913910000
 
 mapPath = 'currentLocation.png'
-maskPath = 'mask.png'
+mapsMaskPath = 'mapMask.png'
+detectionsMaskPath = 'detectionsMask.png'
 
 opt = {'nms_radius' : 4,
         'keypoint_threshold' : 0.005,
@@ -100,8 +101,8 @@ def getParams(filePath):
 #this grabs new google maps images when needed
 def grabNewGoogleMapsImage(pos, fileName, maskPath):
     try:
-        satMapRequest = requests.get(f'https://maps.googleapis.com/maps/api/staticmap?center={pos[0]},{pos[1]}&zoom=20&size=1920x1080&maptype=satellite&key={keys.GOOGLE_API_KEY}', stream=True).raw
-        terrainMapRequest = requests.get(f'https://maps.googleapis.com/maps/api/staticmap?center={pos[0]},{pos[1]}&zoom=20&size=1920x1080&maptype=terrain&key={keys.GOOGLE_API_KEY}', stream=True).raw
+        satMapRequest = requests.get(f'https://maps.googleapis.com/maps/api/staticmap?center={pos[0]},{pos[1]}&zoom=20&size=640x640&maptype=satellite&key={keys.GOOGLE_API_KEY}', stream=True).raw
+        terrainMapRequest = requests.get(f'https://maps.googleapis.com/maps/api/staticmap?center={pos[0]},{pos[1]}&zoom=20&size=640x640&maptype=terrain&key={keys.GOOGLE_API_KEY}', stream=True).raw
         
         if satMapRequest.status == 200 and terrainMapRequest.status == 200:
                 
@@ -110,7 +111,6 @@ def grabNewGoogleMapsImage(pos, fileName, maskPath):
             satMapImage = cv2.imdecode(satMapImage, cv2.IMREAD_COLOR)
             terrainMapImage = np.asarray(bytearray(terrainMapRequest.read()), dtype="uint8")
             terrainMapImage = cv2.imdecode(terrainMapImage, cv2.IMREAD_COLOR)
-            
             
             gray = cv2.cvtColor(terrainMapImage, cv2.COLOR_BGR2GRAY)
 
@@ -121,28 +121,30 @@ def grabNewGoogleMapsImage(pos, fileName, maskPath):
             mask = cv2.dilate(thresh, kernel, iterations=4)
             
             cv2.imwrite(maskPath, mask)
-
-            # set those pixels to black
-            # terrainMapImage[np.where(
-            # (img_dilation[:, :, 0] < 254) & 
-            # (img_dilation[:, :, 1] < 254) & 
-            # (img_dilation[:, :, 2] < 254)
-            # )] = [0, 0, 0]
             
             cv2.imwrite(fileName, satMapImage)
             
             print('Successfully updated maps reference image')
         else:
-            print('\nERROR(s):',satMapRequest.text, '\n', terrainMapRequest.text, '\n')
+            print('\nERROR(s):',satMapRequest.data, '\n', terrainMapRequest.data, '\n')
             exit()
     except requests.exceptions.RequestException as e:
         raise SystemExit(e)
-    
+
+# this generates a mask for detection results, lets us filter out detection results
+def createDetectionsMask(detectionsMaskPath, image, detections):
+    mask = np.ones(image.shape[0:2])
+    mask.fill(255)
+    for detection in detections:
+        bbox = detection.bbox
+        mask[int(bbox.miny):int(bbox.maxy), int(bbox.minx):int(bbox.maxx)] = 0
         
+    mask = cv2.resize(mask, opt['resize'])
+    cv2.imwrite(detectionsMaskPath, mask)
 
 #this checks to see if the google maps image needs to be updated
 def googleMapsImageNeedsToUpdate(lastUpdatedPos, pos):
-    return np.sqrt((lastUpdatedPos[0] - pos[0])**2 + (lastUpdatedPos[1] - pos[1])**2) > 0.001
+    return np.sqrt((lastUpdatedPos[0] - pos[0])**2 + (lastUpdatedPos[1] - pos[1])**2) > 0.1 * latAtZoom20
 
 #this returns the files in a sorted list
 def findFiles(framesDir):
@@ -169,8 +171,26 @@ def getImageAsTensor(path, device, resize, rotation):
     
     return imageAsTensor
 
+# this takes a mask, the matching points, and the points to which the mask will be applied to
+def applyMaskToPoints(maskPath, matchingPoints, pointsToApplyMaskTo):
+    # read in the mask
+    mapsMask = cv2.imread(maskPath, cv2.IMREAD_UNCHANGED)
+    
+    # make a copy of the key points
+    matchingPointsCopy = np.copy(matchingPoints)
+    pointsToApplyMaskToCopy = np.copy(pointsToApplyMaskTo)
+    
+    # grab the indexes of the points we want to filter out using the mask
+    indexes = pointsToApplyMaskToCopy.astype(int)
+    
+    # apply the mask
+    mkpts0 = matchingPointsCopy[mapsMask[indexes[:,1], indexes[:,0]] != 0]
+    mkpts1 = pointsToApplyMaskToCopy[mapsMask[indexes[:,1], indexes[:,0]] != 0]
+    
+    return mkpts0, mkpts1
+
 #this grabs the key points using superglue, it returns a list of matching points
-def keyPointsWithSuperGlue(srcPath, dstPath, maskPath, rot):
+def keyPointsWithSuperGlue(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, rot):
     inp0 = getImageAsTensor(
         srcPath, device, opt['resize'], rot)
     inp1 = getImageAsTensor(
@@ -188,36 +208,10 @@ def keyPointsWithSuperGlue(srcPath, dstPath, maskPath, rot):
     mkpts0 = kpts0[valid]
     mkpts1 = kpts1[matches[valid]]
     
-    # mkpts0Copy = np.copy(mkpts0)
-    # mkpts1Copy = np.copy(mkpts1)
-    
-    # mask = cv2.imread(maskPath, cv2.IMREAD_UNCHANGED)
-    
-    # indexes = mkpts1.astype(int)
-    
-    # s = time.time()
-    # indxs = np.full(mkpts0.shape[0], True)
-    # for i in range(mkpts0.shape[0]):
-    #     point = mkpts1[i]
-    #     if mask[int(point[1]), int(point[0])] < 100:
-    #         indxs[i] = False
+    # apply masks to get rid of bad detections
+    mkpts0, mkpts1 = applyMaskToPoints(mapsMaskPath, mkpts0, mkpts1)
+    mkpts1, mkpts0 = applyMaskToPoints(detectionsMaskPath, mkpts1, mkpts0)
         
-    # altpoints = mkpts1Copy[~indxs]
-    # mkpts0 = mkpts0Copy[indxs]
-    # mkpts1 = mkpts1Copy[indxs]
-    # f = time.time()
-    # print('method 1:', f-s)
-    
-    # s = time.time()
-    # altpoints = mkpts1Copy[mask[indexes[:,1], indexes[:,0]] < 100]
-    # mkpts0 = mkpts0Copy[mask[indexes[:,1], indexes[:,0]] > 100]
-    # mkpts1 = mkpts1Copy[mask[indexes[:,1], indexes[:,0]] > 100]
-    # f = time.time()
-    # print('method 2:', f-s)
-        
-    # altpoints = np.float32(altpoints).reshape(-1,1,2)
-        
-    
     src = np.float32(mkpts0).reshape(-1,1,2)
     dst = np.float32(mkpts1).reshape(-1,1,2)
     
@@ -225,9 +219,9 @@ def keyPointsWithSuperGlue(srcPath, dstPath, maskPath, rot):
     return src, dst
 
 #this finds the key points and then calculates the homography
-def findHomographyUsingNN(srcPath, dstPath, maskPath, rot):
+def findHomographyUsingNN(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, rot):
    
-    src, dst = keyPointsWithSuperGlue(srcPath, dstPath, maskPath, rot)
+    src, dst = keyPointsWithSuperGlue(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, rot)
     
     # image0 = cv2.imread(srcPath)
     # image1 = cv2.imread(dstPath)
@@ -274,7 +268,7 @@ def main():
 
     firstPosFile = frameFiles[0].replace(args.framesDir, args.dataDir).replace('png', 'txt')
     pos, _  = getParams(firstPosFile)
-    grabNewGoogleMapsImage(pos, mapPath, maskPath)
+    grabNewGoogleMapsImage(pos, mapPath, mapsMaskPath)
     
     map = folium.Map(location=[float(pos[0]), float(pos[1])], zoom_start=20, 
                 tiles='cartodbpositron', width=1280, height=960)
@@ -298,7 +292,7 @@ def main():
         if fileFound:
             if googleMapsImageNeedsToUpdate(lastUpdatedPos, pos):
                 print('grabbing new google maps image')
-                grabNewGoogleMapsImage(pos, mapPath, maskPath)
+                grabNewGoogleMapsImage(pos, mapPath, mapsMaskPath)
                 colorIdx += 1
                 lastUpdatedPos = pos
             
@@ -309,8 +303,10 @@ def main():
             
             results = inference_with_sahi(image)
             
+            createDetectionsMask(detectionsMaskPath, image, results.object_prediction_list)
+            
             rot_mat = cv2.getRotationMatrix2D(imgPixelCenter, -rot, 1.0)
-            H = findHomographyUsingNN(frame, mapPath, maskPath, rot)
+            H = findHomographyUsingNN(frame, mapPath, mapsMaskPath, detectionsMaskPath, rot)
             
             c = 0
             
@@ -339,7 +335,7 @@ def main():
                 
             print(f'found {c} cars in {frame}')
         
-    map.save('multiple_frames_croppingMapsImage_larger_unsegmented_method.html')
+    map.save('multiple_frames_croppingMapsImage_larger_unsegmented_method_filter_cars.html')
 
 if __name__ == "__main__":
     main()
