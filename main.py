@@ -8,9 +8,11 @@ import keys
 import glob
 import re
 import numpy as np
+import matplotlib.cm as cm
 from sahi.model import Yolov5DetectionModel
 from sahi.predict import get_sliced_prediction
 from SuperGluePretrainedNetwork.models.matching import Matching
+from SuperGluePretrainedNetwork.models.utils import make_matching_plot
 import time
 
 
@@ -152,28 +154,31 @@ def findFiles(framesDir):
 
 #this grabs the image as a tensor, it also rotates it if needed
 def getImageAsTensor(path, device, resize, rotation):
-    image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    imageGrey = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     w_new, h_new = resize[0], resize[1]
 
     image = cv2.resize(image.astype('float32'), (w_new, h_new))
-
+    imageGrey = cv2.resize(imageGrey.astype('float32'), (w_new, h_new))
+    
     if rotation != 0:
         image_center = tuple(np.array(image.shape[1::-1]) / 2)
         rot_mat = cv2.getRotationMatrix2D(image_center, -rotation, 1.0)
         image = cv2.warpAffine(image, rot_mat, image.shape[1::-1], flags=cv2.INTER_LINEAR)
 
-    imageAsTensor = torch.from_numpy(image/255.0).float()[None, None].to(device)
+    imageAsTensor = torch.from_numpy(imageGrey/255.0).float()[None, None].to(device)
     
     # cv2.imshow('junk',image/255)
     # cv2.waitKey()
     
-    return imageAsTensor
+    return image/255.0, imageAsTensor
 
 #this grabs the key points using superglue, it returns a list of matching points
 def keyPointsWithSuperGlue(srcPath, dstPath, maskPath, rot):
-    inp0 = getImageAsTensor(
+    image0, inp0 = getImageAsTensor(
         srcPath, device, opt['resize'], rot)
-    inp1 = getImageAsTensor(
+    image1, inp1 = getImageAsTensor(
         dstPath, device, opt['resize'], 0)
 
     if do_match:
@@ -181,19 +186,20 @@ def keyPointsWithSuperGlue(srcPath, dstPath, maskPath, rot):
         pred = matching({'image0': inp0, 'image1': inp1})
         pred = {k: v[0].cpu().detach().numpy() for k, v in pred.items()}
         kpts0, kpts1 = pred['keypoints0'], pred['keypoints1']
-        matches, _ = pred['matches0'], pred['matching_scores0']
+        matches, conf = pred['matches0'], pred['matching_scores0']
 
     # Keep the matching keypoints.
     valid = matches > -1
     mkpts0 = kpts0[valid]
     mkpts1 = kpts1[matches[valid]]
+    mconf = conf[valid]
     
-    # mkpts0Copy = np.copy(mkpts0)
-    # mkpts1Copy = np.copy(mkpts1)
+    mkpts0Copy = np.copy(mkpts0)
+    mkpts1Copy = np.copy(mkpts1)
     
-    # mask = cv2.imread(maskPath, cv2.IMREAD_UNCHANGED)
+    mask = cv2.imread(maskPath, cv2.IMREAD_UNCHANGED)
     
-    # indexes = mkpts1.astype(int)
+    indexes = mkpts1.astype(int)
     
     # s = time.time()
     # indxs = np.full(mkpts0.shape[0], True)
@@ -210,13 +216,17 @@ def keyPointsWithSuperGlue(srcPath, dstPath, maskPath, rot):
     
     # s = time.time()
     # altpoints = mkpts1Copy[mask[indexes[:,1], indexes[:,0]] < 100]
-    # mkpts0 = mkpts0Copy[mask[indexes[:,1], indexes[:,0]] > 100]
-    # mkpts1 = mkpts1Copy[mask[indexes[:,1], indexes[:,0]] > 100]
+    mkpts0 = mkpts0Copy[mask[indexes[:,1], indexes[:,0]] > 100]
+    mkpts1 = mkpts1Copy[mask[indexes[:,1], indexes[:,0]] > 100]
     # f = time.time()
     # print('method 2:', f-s)
         
     # altpoints = np.float32(altpoints).reshape(-1,1,2)
-        
+    color = cm.jet(mconf[mask[indexes[:,1], indexes[:,0]] > 100])
+    make_matching_plot(
+            image0, image1, kpts0, kpts1, mkpts0, mkpts1, color,
+            [], 'matchesWithMask', False,
+            False, False, 'Matches', [])
     
     src = np.float32(mkpts0).reshape(-1,1,2)
     dst = np.float32(mkpts1).reshape(-1,1,2)
