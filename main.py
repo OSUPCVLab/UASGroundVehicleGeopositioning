@@ -8,15 +8,16 @@ import keys
 import glob
 import re
 import numpy as np
-from sahi.model import Yolov5DetectionModel
+from sahi.models.yolov8 import Yolov8DetectionModel
 from sahi.predict import get_sliced_prediction
 from SuperGluePretrainedNetwork.models.matching import Matching
 import time
-
+from kornia.feature import LoFTR
+import pickle
 
 model_path = 'car_detection_model.pt'
 model_conf = 0.65
-dimOfImage = 2496
+dimOfImage = 1664
 dimOfResizedImage = 640
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 imgPixelCenter = (dimOfResizedImage / 2, dimOfResizedImage / 2)
@@ -48,17 +49,19 @@ config = {
         'match_threshold': opt['match_threshold'],
     }
 }
-matching = Matching(config).eval().to(device)
+SuperGlueMatcher = Matching(config).eval().to(device)
+LoFTRMatcher = LoFTR(pretrained="outdoor")
 
 do_match = True
 
-#this runs sliced window inference, this provides better results for ariel drone footage
-def inference_with_sahi(img):
-    model = Yolov5DetectionModel(
+model = Yolov8DetectionModel(
         model_path = model_path,
         confidence_threshold=model_conf,
-        device=device
+        device= 'mps' if torch.has_mps else 'cpu'
         )
+
+#this runs sliced window inference, this provides better results for ariel drone footage
+def inference_with_sahi(img):
     result = get_sliced_prediction(
             img,
             model,
@@ -72,13 +75,19 @@ def inference_with_sahi(img):
 def parseArgs():
     parser = argparse.ArgumentParser(description='Collect values to determine GPS position')
     parser.add_argument('--framesDir', type=str, default='sampleData/images', help='where to get drone images from')
-    parser.add_argument('--dataDir', type=str, default='sampleData/params', help='where to get drone data from for reach frame')
-    # parser.add_argument('--framesDir', type=str, default='sampleData/images', help='where to get drone images from')
-    # parser.add_argument('--dataDir', type=str, default='sampleData/params', help='where to get drone data from for reach frame')
+    parser.add_argument('--dataDir', type=str, default='sampleData/params', help='where to get drone data from for each frame')
+    parser.add_argument('--cacheDir', type=str, default='sampleData/cachedDetections', help='where to cache detections for each frame')
+    parser.add_argument('--filterCars', type=bool, default=False, help='whether or not to filter cars')
+    parser.add_argument('--filterRoads', type=bool, default=False, help='whether or not to filter roads')
+    parser.add_argument('--SuperGlue', type=bool, default=False, help='True for SuperGlue, False for LoFTR')
 
     args = parser.parse_args()
-    print('directory with frames:', args.framesDir)
-    print('directory with gps data', args.dataDir)
+    print('directory with frames: ', args.framesDir)
+    print('directory with gps data: ', args.dataDir)
+    print('directory with cachedDetections: ', args.cacheDir)
+    print('filtering cars: ', args.filterCars)
+    print('filtering roads: ', args.filterRoads)
+    print('using superglue: ', args.SuperGlue)
     
     return args
 
@@ -132,15 +141,68 @@ def grabNewGoogleMapsImage(pos, fileName, maskPath):
         raise SystemExit(e)
 
 # this generates a mask for detection results, lets us filter out detection results
-def createDetectionsMask(detectionsMaskPath, image, detections):
-    mask = np.ones(image.shape[0:2])
+def createDetectionsMask(detectionsMaskPath, detectionImageShape, originalImageShape, detections, resize, rotation):
+    mask = np.ones(detectionImageShape)
     mask.fill(255)
     for detection in detections:
         bbox = detection.bbox
         mask[int(bbox.miny):int(bbox.maxy), int(bbox.minx):int(bbox.maxx)] = 0
-        
-    mask = cv2.resize(mask, opt['resize'])
+    
+    mask = cv2.resize(mask, (originalImageShape[1], originalImageShape[0]))
+    
+    if rotation != 0:
+        mask = rotateImage(mask, rotation)
+    
+    w_new, h_new = resize[0], resize[1]
+    h_old, w_old = mask.shape
+    h_new = int(h_old * w_new / w_old)
+    mask = cv2.resize(mask.astype('float32'), (w_new, h_new))
+    
     cv2.imwrite(detectionsMaskPath, mask)
+
+def rotatePoint(x, y, height, width, angle):
+    image_center = (width/2, height/2) # getRotationMatrix2D needs coordinates in reverse order (width, height) compared to shape
+
+    rotation_mat = cv2.getRotationMatrix2D(image_center, -angle, 1.)
+
+    # rotation calculates the cos and sin, taking absolutes of those.
+    abs_cos = abs(rotation_mat[0,0]) 
+    abs_sin = abs(rotation_mat[0,1])
+
+    # find the new width and height bounds
+    bound_w = int(height * abs_sin + width * abs_cos)
+    bound_h = int(height * abs_cos + width * abs_sin)
+
+    # subtract old image center (bringing image back to origo) and adding the new image center coordinates
+    rotation_mat[0, 2] += bound_w/2 - image_center[0]
+    rotation_mat[1, 2] += bound_h/2 - image_center[1]
+
+    # rotate image with the new bounds and translated rotation matrix
+    rotated_point = rotation_mat.dot(np.array((x, y) + (1,)))
+    newX, newY = int(rotated_point[0]), int(rotated_point[1])
+    return newX, newY, bound_h, bound_w
+
+def rotateImage(image, angle):
+    height, width = image.shape[:2] # image shape has 3 dimensions
+    image_center = (width/2, height/2) # getRotationMatrix2D needs coordinates in reverse order (width, height) compared to shape
+
+    rotation_mat = cv2.getRotationMatrix2D(image_center, -angle, 1.)
+
+    # rotation calculates the cos and sin, taking absolutes of those.
+    abs_cos = abs(rotation_mat[0,0]) 
+    abs_sin = abs(rotation_mat[0,1])
+
+    # find the new width and height bounds
+    bound_w = int(height * abs_sin + width * abs_cos)
+    bound_h = int(height * abs_cos + width * abs_sin)
+
+    # subtract old image center (bringing image back to origo) and adding the new image center coordinates
+    rotation_mat[0, 2] += bound_w/2 - image_center[0]
+    rotation_mat[1, 2] += bound_h/2 - image_center[1]
+
+    # rotate image with the new bounds and translated rotation matrix
+    rotated_image = cv2.warpAffine(image, rotation_mat, (bound_w, bound_h))
+    return rotated_image
 
 #this checks to see if the google maps image needs to be updated
 def googleMapsImageNeedsToUpdate(lastUpdatedPos, pos):
@@ -155,21 +217,18 @@ def findFiles(framesDir):
 #this grabs the image as a tensor, it also rotates it if needed
 def getImageAsTensor(path, device, resize, rotation):
     image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-    w_new, h_new = resize[0], resize[1]
-
-    image = cv2.resize(image.astype('float32'), (w_new, h_new))
-
+    
     if rotation != 0:
-        image_center = tuple(np.array(image.shape[1::-1]) / 2)
-        rot_mat = cv2.getRotationMatrix2D(image_center, -rotation, 1.0)
-        image = cv2.warpAffine(image, rot_mat, image.shape[1::-1], flags=cv2.INTER_LINEAR)
+        image = rotateImage(image, rotation)
+    
+    w_new, h_new = resize[0], resize[1]
+    h_old, w_old = image.shape
+    h_new = int(h_old * w_new / w_old)
+    image = cv2.resize(image.astype('float32'), (w_new, h_new))
 
     imageAsTensor = torch.from_numpy(image/255.0).float()[None, None].to(device)
     
-    # cv2.imshow('junk',image/255)
-    # cv2.waitKey()
-    
-    return imageAsTensor
+    return image.astype('uint8'), imageAsTensor
 
 # this takes a mask, the matching points, and the points to which the mask will be applied to
 def applyMaskToPoints(maskPath, matchingPoints, pointsToApplyMaskTo):
@@ -190,50 +249,67 @@ def applyMaskToPoints(maskPath, matchingPoints, pointsToApplyMaskTo):
     return mkpts0, mkpts1
 
 #this grabs the key points using superglue, it returns a list of matching points
-def keyPointsWithSuperGlue(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, rot):
-    inp0 = getImageAsTensor(
-        srcPath, device, opt['resize'], rot)
-    inp1 = getImageAsTensor(
-        dstPath, device, opt['resize'], 0)
-
-    if do_match:
-        # Perform the matching.
-        pred = matching({'image0': inp0, 'image1': inp1})
-        pred = {k: v[0].cpu().detach().numpy() for k, v in pred.items()}
-        kpts0, kpts1 = pred['keypoints0'], pred['keypoints1']
-        matches, _ = pred['matches0'], pred['matching_scores0']
+def keyPointsWithSuperGlue(batch):
+    # Perform the matching.
+    pred = SuperGlueMatcher(batch)
+    pred = {k: v[0].cpu().detach().numpy() for k, v in pred.items()}
+    kpts0, kpts1 = pred['keypoints0'], pred['keypoints1']
+    matches, _ = pred['matches0'], pred['matching_scores0']
 
     # Keep the matching keypoints.
     valid = matches > -1
     mkpts0 = kpts0[valid]
     mkpts1 = kpts1[matches[valid]]
     
-    # apply masks to get rid of bad detections
-    mkpts0, mkpts1 = applyMaskToPoints(mapsMaskPath, mkpts0, mkpts1)
-    mkpts1, mkpts0 = applyMaskToPoints(detectionsMaskPath, mkpts1, mkpts0)
+    # return src, dst, altpoints
+    return mkpts0, mkpts1
+
+def keyPointsWithLoFTR(batch):
+    # Inference with LoFTR and get prediction
+    with torch.no_grad():
+        LoFTRMatcher(batch)
+        mkpts0 = batch['mkpts0_f'].cpu().numpy()
+        mkpts1 = batch['mkpts1_f'].cpu().numpy()
+        mconf = batch['mconf'].cpu().numpy()
+
+    mkpts1 = [mkpts1[i] for i in range(len(mconf)) if mconf[i] > 0.6]
+    mkpts0 = [mkpts0[i] for i in range(len(mconf)) if mconf[i] > 0.6]
+    
+    return mkpts0, mkpts1
+
+#this finds the key points and then calculates the homography
+def findHomographyUsingNN(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, rot, args):
+    image0, img0 = getImageAsTensor(
+        srcPath, device, opt['resize'], rot)
+    image1, img1 = getImageAsTensor(
+        dstPath, device, opt['resize'], 0)
+   
+    batch = {'image0': img0, 'image1': img1}
+   
+    if args.SuperGlue:
+        mkpts0, mkpts1 = keyPointsWithSuperGlue(batch)
+    else:
+        mkpts0, mkpts1 = keyPointsWithLoFTR(batch)
+    
+    # apply masks to matching points
+    if args.filterRoads:
+        mkpts0, mkpts1 = applyMaskToPoints(mapsMaskPath, mkpts0, mkpts1)
+    if args.filterCars:
+        mkpts1, mkpts0 = applyMaskToPoints(detectionsMaskPath, mkpts1, mkpts0)
         
     src = np.float32(mkpts0).reshape(-1,1,2)
     dst = np.float32(mkpts1).reshape(-1,1,2)
     
-    # return src, dst, altpoints
-    return src, dst
-
-#this finds the key points and then calculates the homography
-def findHomographyUsingNN(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, rot):
-   
-    src, dst = keyPointsWithSuperGlue(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, rot)
-    
-    # image0 = cv2.imread(srcPath)
-    # image1 = cv2.imread(dstPath)
     # mask = cv2.imread(maskPath, cv2.IMREAD_UNCHANGED)
     # image1[mask < 100] = (0,0,0)
     # for p in dst:
     #     cv2.circle(image1, (int(p[0,0]), int(p[0,1])), 3, (5,255,255), 3)
-    # for p in altpoint:
-    #     cv2.circle(image1, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
+    # for p in src:
+    #     cv2.circle(image0, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
     
     
     # cv2.imshow('dots',image1)
+    # cv2.imshow('dots2',image0)
     # cv2.waitKey()
 
     # image0 = cv2.resize(image0, [dimOfResizedImage, dimOfResizedImage])
@@ -263,6 +339,11 @@ def calculateGPSPosOfObject(center, imgPixelCenter, pos):
     
 def main():
     args = parseArgs()
+    carsText = 'filtering_cars' if args.filterCars else 'not_filtering_cars'
+    roadsText = 'filtering_roads' if args.filterRoads else 'not_filtering_roads'
+    featureMatchingModelText = 'SuperGlue' if args.SuperGlue else 'LoFTR'
+    saveFileName = f'run_{carsText}_{roadsText}_{featureMatchingModelText}.html'
+    print('saving results to: ', saveFileName)
     
     frameFiles = findFiles(args.framesDir)
 
@@ -288,6 +369,7 @@ def main():
             pos, rot = getParams(paramPath)
         except:
             fileFound = False
+            print(paramPath, 'not found')
         
         if fileFound:
             if googleMapsImageNeedsToUpdate(lastUpdatedPos, pos):
@@ -299,27 +381,54 @@ def main():
             droneImage = cv2.imread(frame)
             
             image = cv2.cvtColor(droneImage, cv2.COLOR_BGR2RGB)
+            originalImg_h, originalImg_w, _ = image.shape
             image = cv2.resize(image, (dimOfImage, dimOfImage))
             
-            results = inference_with_sahi(image)
+            # Its important to use binary mode
+            cachedDetectionsPath = paramPath = frame.replace(args.framesDir, args.cacheDir).replace('.png', '')
+            results = None
+            try:
+                detectionsfile = open(cachedDetectionsPath, 'rb')     
+                results = pickle.load(detectionsfile)
+                detectionsfile.close()
+                print(f'for {frame} cached detections found')
+            except:
+                results = inference_with_sahi(image)
+                
+                dbfile = open(cachedDetectionsPath, 'ab')
+                pickle.dump(results, dbfile)                     
+                dbfile.close()
+                
+                print(f'for {frame} cached detections not found, new cached detections saved')
             
-            createDetectionsMask(detectionsMaskPath, image, results.object_prediction_list)
+            createDetectionsMask(detectionsMaskPath, image.shape[0:2], droneImage.shape[0:2], results.object_prediction_list, opt['resize'], rot)
             
-            rot_mat = cv2.getRotationMatrix2D(imgPixelCenter, -rot, 1.0)
-            H = findHomographyUsingNN(frame, mapPath, mapsMaskPath, detectionsMaskPath, rot)
+            H = findHomographyUsingNN(frame, mapPath, mapsMaskPath, detectionsMaskPath, rot, args)
             
             c = 0
+            
+            mapImage = cv2.imread(mapPath, cv2.IMREAD_UNCHANGED)
+            originalImage = cv2.imread(frame)
+            
+            originalImage = rotateImage(originalImage, rot)
             
             for result in results.object_prediction_list:
                 x1 = result.bbox.minx + ((result.bbox.maxx - result.bbox.minx) / 2)
                 y1 = result.bbox.miny + ((result.bbox.maxy - result.bbox.miny) / 2)
                 
-                x1 = dimOfResizedImage * x1 / dimOfImage
-                y1 = dimOfResizedImage * y1 / dimOfImage
+                x1 = originalImg_w * x1 / dimOfImage
+                y1 = originalImg_h * y1 / dimOfImage
                 
                 # rotate the detections
-                rotated_point = rot_mat.dot(np.array((x1,y1) + (1,)))
-                x1,y1 = int(rotated_point[0]), int(rotated_point[1])
+                x1, y1, bound_h, bound_w = rotatePoint(x1, y1, originalImg_h, originalImg_w, rot)
+                
+                # scale the detections
+                w_new, h_new = opt['resize'][0], opt['resize'][1]
+                h_old, w_old = bound_h, bound_w
+                h_new = int(h_old * w_new / w_old)
+                
+                x1 = x1 * w_new / w_old
+                y1 = y1 * h_new / h_old
                 
                 # compute new pixel positions using homography
                 x = (x1*H[0,0] + y1*H[0,1] + H[0,2])/(x1*H[2,0] + y1*H[2,1] + H[2,2])
@@ -335,7 +444,7 @@ def main():
                 
             print(f'found {c} cars in {frame}')
         
-    map.save('multiple_frames_croppingMapsImage_larger_unsegmented_method_filter_cars.html')
+    map.save(saveFileName)
 
 if __name__ == "__main__":
     main()
