@@ -77,9 +77,12 @@ def parseArgs():
     parser.add_argument('--framesDir', type=str, default='sampleData/images', help='where to get drone images from')
     parser.add_argument('--dataDir', type=str, default='sampleData/params', help='where to get drone data from for each frame')
     parser.add_argument('--cacheDir', type=str, default='sampleData/cachedDetections', help='where to cache detections for each frame')
+    # parser.add_argument('--framesDir', type=str, default='isoData/images', help='where to get drone images from')
+    # parser.add_argument('--dataDir', type=str, default='isoData/params', help='where to get drone data from for each frame')
+    # parser.add_argument('--cacheDir', type=str, default='isoData/cachedDetections', help='where to cache detections for each frame')
     parser.add_argument('--filterCars', type=bool, default=True, help='whether or not to filter cars')
     parser.add_argument('--filterRoads', type=bool, default=True, help='whether or not to filter roads')
-    parser.add_argument('--SuperGlue', type=bool, default=False, help='True for SuperGlue, False for LoFTR')
+    parser.add_argument('--SuperGlue', type=bool, default=True, help='True for SuperGlue, False for LoFTR')
 
     args = parser.parse_args()
     print('directory with frames: ', args.framesDir)
@@ -216,17 +219,18 @@ def findFiles(framesDir):
 
 #this grabs the image as a tensor, it also rotates it if needed
 def getImageAsTensor(path, device, resize, rotation):
-    image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     
     if rotation != 0:
         image = rotateImage(image, rotation)
     
     w_new, h_new = resize[0], resize[1]
-    h_old, w_old = image.shape
+    h_old, w_old = image.shape[0:2]
     h_new = int(h_old * w_new / w_old)
     image = cv2.resize(image.astype('float32'), (w_new, h_new))
 
-    imageAsTensor = torch.from_numpy(image/255.0).float()[None, None].to(device)
+    greyImage = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    imageAsTensor = torch.from_numpy(greyImage/255.0).float()[None, None].to(device)
     
     return image.astype('uint8'), imageAsTensor
 
@@ -299,20 +303,34 @@ def findHomographyUsingNN(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, ro
     
     
     # apply masks to matching points
-    if args.filterRoads:
-        mkpts0, mkpts1 = applyMaskToPoints(mapsMaskPath, mkpts0, mkpts1)
-    if args.filterCars:
-        mkpts1, mkpts0 = applyMaskToPoints(detectionsMaskPath, mkpts1, mkpts0)
+    
+    # image0NoFilter  = np.copy(image0)
+    # src = np.float32(mkpts0).reshape(-1,1,2)
+    # for p in src:
+    #     cv2.circle(image0NoFilter, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
+    # cv2.imwrite('matchingpoints0_noFilter.png', image0NoFilter)
+    
+    # image0RoadFilter = np.copy(image0)
+    # if args.filterRoads:
+    #     mkpts0, mkpts1 = applyMaskToPoints(mapsMaskPath, mkpts0, mkpts1)
+    # src = np.float32(mkpts0).reshape(-1,1,2)
+    # for p in src:
+    #     cv2.circle(image0RoadFilter, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
+    # cv2.imwrite('matchingpoints0_RoadFilter.png', image0RoadFilter)
+    
+    # image0CarFilter = np.copy(image0)
+    # if args.filterCars:
+    #     mkpts1, mkpts0 = applyMaskToPoints(detectionsMaskPath, mkpts1, mkpts0)
+    # src = np.float32(mkpts0).reshape(-1,1,2)
+    # for p in src:
+    #     cv2.circle(image0CarFilter, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
+    # cv2.imwrite('matchingpoints0_onlyCarFilter.png', image0CarFilter)
         
     src = np.float32(mkpts0).reshape(-1,1,2)
     dst = np.float32(mkpts1).reshape(-1,1,2)
     
     # mask = cv2.imread(maskPath, cv2.IMREAD_UNCHANGED)
     # image1[mask < 100] = (0,0,0)
-    # for p in dst:
-    #     cv2.circle(image1, (int(p[0,0]), int(p[0,1])), 3, (5,255,255), 3)
-    # for p in src:
-    #     cv2.circle(image0, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
     
     
     # cv2.imshow('dots',image1)
@@ -323,6 +341,27 @@ def findHomographyUsingNN(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, ro
     # image1 = cv2.resize(image1, [dimOfResizedImage, dimOfResizedImage])
 
     H, _ = cv2.findHomography(src, dst, cv2.RANSAC, 5)
+    
+    
+    image1cpy = np.copy(image1)
+    image0cpy = np.copy(image0)
+    
+    # for p in dst:
+    #     cv2.circle(image1, (int(p[0,0]), int(p[0,1])), 3, (5,255,255), 3)
+    # for p in src:
+    #     cv2.circle(image0, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
+    # cv2.imwrite('matchingpoints0.png', image0)
+    # cv2.imwrite('matchingpoints1.png', image1)
+    
+    result = cv2.warpPerspective(image0cpy, H, (640, 640))
+    for r in range(result.shape[0]):
+        for c in range(result.shape[1]):
+            # layer them and make it transparent
+            # image1cpy[r,c] = 0.5 * result[r, c] + 0.5 * image1cpy[r, c] if result[r, c].all() > 0 else image1cpy[r, c]
+            # overlap the drone image onto the google maps image
+            image1cpy[r,c] = result[r, c] if result[r, c].all() > 0 else image1cpy[r, c]
+    
+    cv2.imwrite('warpedImage.png', image1cpy)
     
     return H
 
@@ -451,8 +490,10 @@ def main():
                 c += 1
                 
             print(f'found {c} cars in {frame}')
+            map.save(saveFileName)
+            exit()
         
-    map.save(saveFileName)
+    
 
 if __name__ == "__main__":
     main()
