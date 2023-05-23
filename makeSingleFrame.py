@@ -74,12 +74,12 @@ def inference_with_sahi(img):
 #this lets us determine where to grab the images and meta data
 def parseArgs():
     parser = argparse.ArgumentParser(description='Collect values to determine GPS position')
-    parser.add_argument('--framesDir', type=str, default='sampleData/images', help='where to get drone images from')
-    parser.add_argument('--dataDir', type=str, default='sampleData/params', help='where to get drone data from for each frame')
-    parser.add_argument('--cacheDir', type=str, default='sampleData/cachedDetections', help='where to cache detections for each frame')
-    # parser.add_argument('--framesDir', type=str, default='isoData/images', help='where to get drone images from')
-    # parser.add_argument('--dataDir', type=str, default='isoData/params', help='where to get drone data from for each frame')
-    # parser.add_argument('--cacheDir', type=str, default='isoData/cachedDetections', help='where to cache detections for each frame')
+    # parser.add_argument('--framesDir', type=str, default='sampleData/images', help='where to get drone images from')
+    # parser.add_argument('--dataDir', type=str, default='sampleData/params', help='where to get drone data from for each frame')
+    # parser.add_argument('--cacheDir', type=str, default='sampleData/cachedDetections', help='where to cache detections for each frame')
+    parser.add_argument('--framesDir', type=str, default='isoData/images', help='where to get drone images from')
+    parser.add_argument('--dataDir', type=str, default='isoData/params', help='where to get drone data from for each frame')
+    parser.add_argument('--cacheDir', type=str, default='isoData/cachedDetections', help='where to cache detections for each frame')
     parser.add_argument('--filterCars', type=bool, default=True, help='whether or not to filter cars')
     parser.add_argument('--filterRoads', type=bool, default=True, help='whether or not to filter roads')
     parser.add_argument('--SuperGlue', type=bool, default=True, help='True for SuperGlue, False for LoFTR')
@@ -318,13 +318,13 @@ def findHomographyUsingNN(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, ro
     #     cv2.circle(image0RoadFilter, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
     # cv2.imwrite('matchingpoints0_RoadFilter.png', image0RoadFilter)
     
-    # image0CarFilter = np.copy(image0)
-    # if args.filterCars:
-    #     mkpts1, mkpts0 = applyMaskToPoints(detectionsMaskPath, mkpts1, mkpts0)
-    # src = np.float32(mkpts0).reshape(-1,1,2)
-    # for p in src:
-    #     cv2.circle(image0CarFilter, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
-    # cv2.imwrite('matchingpoints0_onlyCarFilter.png', image0CarFilter)
+    image0CarFilter = np.copy(image0)
+    if args.filterCars:
+        mkpts1, mkpts0 = applyMaskToPoints(detectionsMaskPath, mkpts1, mkpts0)
+    src = np.float32(mkpts0).reshape(-1,1,2)
+    for p in src:
+        cv2.circle(image0CarFilter, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
+    cv2.imwrite('matchingpoints0_onlyCarFilter.png', image0CarFilter)
         
     src = np.float32(mkpts0).reshape(-1,1,2)
     dst = np.float32(mkpts1).reshape(-1,1,2)

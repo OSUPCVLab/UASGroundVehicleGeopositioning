@@ -7,8 +7,7 @@ from sklearn import cluster
 from tabulate import tabulate
 import csv
 import copy
-
-
+from scipy.stats import mannwhitneyu, ttest_ind, chi
 
 debug = True
 
@@ -39,8 +38,7 @@ def getYXpos(mean, p):
     
     return resultY, resultX
 
-
-def runAnalysisOnFile(fileName):
+def readInData(fileName):
     file = open(fileName)
     points = []
     colors = []
@@ -67,6 +65,9 @@ def runAnalysisOnFile(fileName):
     points = np.array(points)
     colors = np.array(colors)
     
+    return points, colors
+
+def normalizeDataAndFilterOutliers(points, colors):
     mean_lat_long = points.mean(axis=0)
     for i in range(points.shape[0]):
         points[i] = getYXpos(mean_lat_long, points[i])
@@ -86,11 +87,11 @@ def runAnalysisOnFile(fileName):
         ax.set_aspect('equal', adjustable='box')
         
         plt.scatter(normalizedPoints[:,1], normalizedPoints[:,0], s = 3, c=colors)
-        plt.savefig('originalPoints.png')
+        plt.savefig('originalPoints.png',bbox_inches='tight')
         
         outlierIdx = dbscan.labels_ == -1 
         plt.scatter(normalizedPoints[outlierIdx,1], normalizedPoints[outlierIdx,0], s=45, c='purple', marker='x')
-        plt.savefig('outliers.png')
+        plt.savefig('outliers.png',bbox_inches='tight')
         
         plt.show()
     
@@ -101,33 +102,59 @@ def runAnalysisOnFile(fileName):
     colors = colors[dbscan.labels_ != -1]
     if debug: print(normalizedPoints.shape)
     
-    # mean_meters = normalizedPoints.mean(axis=0)
-    # stdev_meters = normalizedPoints.std(axis=0)
-    # for i in range(normalizedPoints.shape[0]):
-    #     normalizedPoints[i] = (normalizedPoints[i] - mean_meters)/stdev_meters
-    
-    kmeans = cluster.KMeans(numberClusters, n_init='auto')
-    kmeans.fit(normalizedPoints)
-    
-    if debug: print('sum of stdev is ', kmeans.inertia_)
+    return numberClusters, normalizedPoints, pointsRemoved, colors
 
-    if debug:
-        ax = plt.gca()
-        ax.xaxis.set_tick_params(labelbottom=False)
-        ax.yaxis.set_tick_params(labelleft=False)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.set_aspect('equal', adjustable='box')
+def plotKMeans(normalizedPoints, colors, cluster_centers, dists, fileName):
+    ax = plt.gca()
+    ax.xaxis.set_tick_params(labelbottom=False)
+    ax.yaxis.set_tick_params(labelleft=False)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_aspect('equal', adjustable='box')
+    
+    plt.scatter(normalizedPoints[:,1], normalizedPoints[:,0], s = 3, c=colors)
+    plt.savefig('removedoutliers.png',bbox_inches='tight')
+    
+    plt.scatter(cluster_centers[:,1], cluster_centers[:,0], s=15, c='pink', marker='+')
+    plt.savefig('computedClusterCenters.png',bbox_inches='tight')
+    
+    plt.show()
+    
+    plt.hist(dists, 100)
+    plt.title(fileName)
+    plt.show()
+
+def runAnalysisOnFile(fileName, timesToRunKMeans = 1):
+    points, colors = readInData(fileName)
+    
+    numberClusters, normalizedPoints, pointsRemoved, colors = normalizeDataAndFilterOutliers(points, colors)
+    
+    aggregateClusterMeanDistances = []
+    aggregateClusterDistances = []
+    
+    for i in range(timesToRunKMeans):
+        kmeans = cluster.KMeans(numberClusters, n_init=1)
+        kmeans.fit(normalizedPoints)
         
-        plt.scatter(normalizedPoints[:,1], normalizedPoints[:,0], s = 3, c=colors)
-        plt.savefig('removedoutliers.png')
+        centers = kmeans.cluster_centers_
+        labels = kmeans.labels_
+        dists = np.zeros(labels.shape)
+        for p in range(len(normalizedPoints)):
+            center = centers[labels[p]]
+            dists[p] = np.linalg.norm(normalizedPoints[p] - center)
         
-        plt.scatter(kmeans.cluster_centers_[:,1], kmeans.cluster_centers_[:,0], s=15, c='pink', marker='+')
-        plt.savefig('computedClusterCenters.png')
+        clusterMeanDistance = np.zeros(centers.shape[0])
+        for c in range(len(centers)):
+            clusterDists = dists[labels == c]
+            clusterMeanDistance[c] = np.mean(clusterDists)
+            
+        aggregateClusterDistances.append(dists)
+        aggregateClusterMeanDistances.append(clusterMeanDistance)
         
-        plt.show()
+        if debug:
+            plotKMeans(normalizedPoints, colors, kmeans.cluster_centers_, dists, fileName)
         
-    return kmeans.inertia_, pointsRemoved
+    return pointsRemoved, np.array(aggregateClusterMeanDistances), np.array(aggregateClusterDistances)
 
 def getRow(fileName: str):
     if 'run_filtering_cars_filtering_roads' in fileName:
@@ -146,6 +173,28 @@ def getColumn(fileName: str):
         return 1
     if 'SuperGlue' in fileName:
         return 2
+    
+    
+fileNameToHeader = {
+    'results/run_filtering_cars_filtering_roads_LoFTR.html': 'CF, RF, KP: Lo',
+    'results/run_not_filtering_cars_filtering_roads_LoFTR.html': 'RF, KP: Lo',
+    'results/run_filtering_cars_filtering_roads_SuperGlue.html': 'CF, RF, KP: SG',
+    'results/run_not_filtering_cars_filtering_roads_SuperGlue.html': 'RF, KP: SG',
+    'results/run_filtering_cars_filtering_roads_SuperGlue_LoFTR.html': 'CF, RF, KP: SG + Lo',
+    'results/run_not_filtering_cars_filtering_roads_SuperGlue_LoFTR.html': 'RF, KP: SG + Lo',
+    'results/run_filtering_cars_not_filtering_roads_LoFTR.html': 'CF, KP: Lo',
+    'results/run_not_filtering_cars_not_filtering_roads_LoFTR.html': 'NF, KP: Lo',
+    'results/run_filtering_cars_not_filtering_roads_SuperGlue.html': 'CF, KP: SG',
+    'results/run_not_filtering_cars_not_filtering_roads_SuperGlue.html': 'NF, KP: SG',
+    'results/run_filtering_cars_not_filtering_roads_SuperGlue_LoFTR.html': 'CF, KP: SG + Lo',
+    'results/run_not_filtering_cars_not_filtering_roads_SuperGlue_LoFTR.html': 'NF, KP: SG + Lo'
+}
+
+def shouldCompare(distNameA, distNameB):
+    indexA = distNameA.index('KP')
+    indexB = distNameB.index('KP')
+    return (indexA == indexB and distNameA[:indexA] == distNameB[:indexB]) or (distNameA[indexA:] == distNameB[indexB:])
+
 
 def runFullAnalysis():
     args = parseArgs()
@@ -153,40 +202,141 @@ def runFullAnalysis():
     files = glob.glob(f'{args.filesToEvaluateDir}/*')
     files.sort()
     
-    errorData = [["Filtering Performed", "LoFTR", "SuperGlue", "LoFTR + SuperGlue"],
+    files = [
+        'results/run_filtering_cars_filtering_roads_LoFTR.html',
+        'results/run_not_filtering_cars_filtering_roads_LoFTR.html',
+        'results/run_filtering_cars_not_filtering_roads_LoFTR.html',
+        'results/run_not_filtering_cars_not_filtering_roads_LoFTR.html',
+        'results/run_filtering_cars_filtering_roads_SuperGlue.html',
+        'results/run_not_filtering_cars_filtering_roads_SuperGlue.html',
+        'results/run_filtering_cars_not_filtering_roads_SuperGlue.html',
+        'results/run_not_filtering_cars_not_filtering_roads_SuperGlue.html',
+        'results/run_filtering_cars_filtering_roads_SuperGlue_LoFTR.html',
+        'results/run_not_filtering_cars_filtering_roads_SuperGlue_LoFTR.html',
+        'results/run_filtering_cars_not_filtering_roads_SuperGlue_LoFTR.html',
+        'results/run_not_filtering_cars_not_filtering_roads_SuperGlue_LoFTR.html',
+    ]
+    
+    baseFormat = [["Filtering Performed", "LoFTR", "SuperGlue", "LoFTR + SuperGlue"],
             ['None', None, None, None],
             ['Road', None, None, None],
             ['Remove Cars', None, None, None],
             ['Road + Remove Cars', None, None, None]]
     
-    removedData = copy.deepcopy(errorData)
+    removedData = copy.deepcopy(baseFormat)
+    meanError = copy.deepcopy(baseFormat)
+    
+    distributions = []
+    meanDistributions = []
+    distributionNames = []
+    
+    kmeansRuns = 200
     
     for file in files:
-        totalError, pointsRemoved = runAnalysisOnFile(file)
-        errorData[getRow(file)][getColumn(file)] = totalError
+        print('running analysis on ', file)
+        pointsRemoved, clusterMeanDistance, dists = runAnalysisOnFile(file, kmeansRuns)
+        metric = clusterMeanDistance.flatten()
         removedData[getRow(file)][getColumn(file)] = pointsRemoved
+        meanError[getRow(file)][getColumn(file)] = '{:.3f} ± {:.3f}'.format(metric.mean(), np.std(metric) )
         
-    
-    print('\nSum of Squared Distances for clusters (lower is better):')
-    print(tabulate(errorData,headers='firstrow'))
+        meanDistributions.append(clusterMeanDistance)
+        distributions.append(dists)
+        
+        distributionName = fileNameToHeader[file]
+        distributionNames.append(distributionName)
+        
+        bins=np.arange(0, 12 + 0.5, 0.5)
+        plt.hist(dists.flatten(), bins)
+        plt.xlabel('Distance to Cluster Center (meters)')
+        plt.ylabel('Frequency of Bin')
+        plt.title('{} Distance Distribution'.format(distributionName))
+        plt.savefig('imagesForPaper/{}_dists.png'.format(distributionName.replace(' ', '_').replace(',','').replace(':', '_is').replace('+', 'and')))
+        plt.close()
+        # plt.show()
+        
+        bins=np.arange(0, 7 + 0.5, 0.25)
+        plt.hist(clusterMeanDistance.flatten(), bins)
+        plt.xlabel('Mean Distance to Cluster Center (meters)')
+        plt.ylabel('Frequency of Bin')
+        plt.title('{} Mean Distance Distribution'.format(distributionName))
+        plt.savefig('imagesForPaper/{}_meanDists.png'.format(distributionName.replace(' ', '_').replace(',','').replace(':', '_is').replace('+', 'and')))
+        plt.close()
+        # plt.show()
+        
     print('\nNumber of outliers removed:')
     print(tabulate(removedData,headers='firstrow'))
-    
-    with open("errorData.csv", "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerows(errorData)
+    print('\nMean Distance from Cluster:')
+    print(tabulate(meanError,headers='firstrow'))
     
     with open("removedData.csv", "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerows(removedData)
+        
+    with open("meanData.csv", "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerows(meanError)
+        
+    l = len(distributions)
+    
+    for distType in ['Mean Distance', 'Distance']:
+        distribution = distributions if distType == 'Distance' else meanDistributions
+        meandist = '' if distType == 'Distance' else ' per Cluster'
+        MWScoresText = np.chararray((l, l), itemsize = 13, unicode=True)    
+        MWScores = np.zeros((l, l))    
+            
+        for i in range(l):
+            for j in range(i, l):
+                if shouldCompare(distributionNames[j], distributionNames[i]):
+                    ps = []
+                    for k in range(kmeansRuns):
+                        _, p = mannwhitneyu(distribution[i][k], distribution[j][k])
+                        ps.append(p)
+                    ps = np.asarray(ps)
+                    MWScoresText[i,j] = ' {:.2f}\n± {:.2f}'.format(ps.mean(), np.std(ps) )
+                    MWScores[i,j] = ps.mean()
+        
+        fig, ax = plt.subplots()
+        
+        fig.set_figheight(17)
+        fig.set_figwidth(20)
+        
+        ax.matshow(MWScores, cmap=plt.cm.Blues, alpha=0.3)
+        ax.set_yticklabels(distributionNames, weight='bold', fontsize=24)
+        ax.set_yticks(range(l))
+        
+        ax2 = ax.secondary_yaxis("right")
+        ax2.set_yticklabels(distributionNames, weight='bold', fontsize=24)
+        ax2.set_yticks(range(l))
+        for i in range(l): ax2.get_yticklabels()[i].set_color("white")
+        
+        ax.set_xticklabels(['\n' + d for d in distributionNames], weight='bold', fontsize=24)
+        ax.set_xticks(range(l))
+        ax.xaxis.set_ticks_position('bottom')
+        
+        for i in [0,1,2,3]: ax.get_xticklabels()[i].set_color("red")
+        for i in [0,1,2,3]: ax.get_xticklabels()[i + 4].set_color("green")
+        for i in [0,1,2,3]: ax.get_xticklabels()[i + 8].set_color("blue")
+        
+        for i in [0,1,2,3]: ax.get_yticklabels()[i].set_color("red")
+        for i in [0,1,2,3]: ax.get_yticklabels()[i + 4].set_color("green")
+        for i in [0,1,2,3]: ax.get_yticklabels()[i + 8].set_color("blue")
+        
+        fig.autofmt_xdate(rotation=90)
+        for i in range(MWScores.shape[0]):
+            for j in range(i,MWScores.shape[1]):
+                if shouldCompare(distributionNames[j], distributionNames[i]):
+                    ax.text(x=j, y=i,s=MWScoresText[i, j], va='center', ha='center', size='xx-large', weight='bold')
+        
+        plt.title(f'Mann-Whitney Test p scores for Distributions of\n{distType} to Cluster Center{meandist}\nAverage over {kmeansRuns} iterations', fontsize=32, weight='bold')
+        plt.savefig(f'Mann-Whitney_{distType}.png'.replace(' ', '_'), bbox_inches='tight')
 
 def main():
-    args = parseArgs()
-    files = glob.glob(f'{args.filesToEvaluateDir}/*')
-    files.sort()
-    file = files[1]
-    runAnalysisOnFile(file)
-    
+    # args = parseArgs()
+    # files = glob.glob(f'{args.filesToEvaluateDir}/*')
+    # files.sort()
+    # file = files[1]
+    runAnalysisOnFile('results/run_filtering_cars_filtering_roads_LoFTR.html')
+    # runFullAnalysis()
     
 if __name__ == "__main__":
     main()

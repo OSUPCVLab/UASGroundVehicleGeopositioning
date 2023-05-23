@@ -68,43 +68,53 @@ def findFiles(framesDir):
     files.sort()
     return files
 
-def drawPredictionsOnImage(image, results):
+def drawPredictionsOnImage(image, droneImage, results):
+    scaleX = droneImage.shape[1]/ image.shape[1] 
+    scaleY = droneImage.shape[0]/ image.shape[0] 
     for result in results.object_prediction_list:
-        p1 = (int(result.bbox.minx), int(result.bbox.miny))
-        p2 = (int(result.bbox.maxx), int(result.bbox.maxy))
+        p1 = (int(result.bbox.minx * scaleX), int(result.bbox.miny * scaleY))
+        p2 = (int(result.bbox.maxx * scaleX), int(result.bbox.maxy * scaleY))
         
-        cv2.rectangle(image, p1, p2, (255,0,0), 5)
+        cv2.rectangle(droneImage, p1, p2, (0,0,255), 5)
 
 def main():
     args = parseArgs()
     frameFiles = findFiles(args.framesDir)
 
-    frame = frameFiles[0]
+    np.random.shuffle(frameFiles)
+    for i in range(4):
+        frame = frameFiles[i]
+            
+        droneImage = cv2.imread(frame)
         
-    droneImage = cv2.imread(frame)
-    
-    image = cv2.cvtColor(droneImage, cv2.COLOR_BGR2RGB)
-    image = cv2.resize(image, (dimOfImage, dimOfImage))
-    smallerDim = int(dimOfImage / 2)
-    image1 = image[0:smallerDim, 0:smallerDim, :]
-    image2 = image[0:smallerDim, smallerDim:dimOfImage, :]
-    image3 = image[smallerDim:dimOfImage, 0:smallerDim, :]
-    image4 = image[smallerDim:dimOfImage, smallerDim:dimOfImage, :]
-    
-    cv2.imwrite('emptyimage.png',cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
-    cv2.imwrite('emptyimage1.png', cv2.cvtColor(image1, cv2.COLOR_RGB2BGR))
-    cv2.imwrite('emptyimage2.png', cv2.cvtColor(image2, cv2.COLOR_RGB2BGR))
-    cv2.imwrite('emptyimage3.png', cv2.cvtColor(image3, cv2.COLOR_RGB2BGR))
-    cv2.imwrite('emptyimage4.png', cv2.cvtColor(image4, cv2.COLOR_RGB2BGR))
-    
-    # results = inference_with_sahi(image)
+        image = cv2.cvtColor(droneImage, cv2.COLOR_BGR2RGB)
+        image = cv2.resize(image, (dimOfImage, dimOfImage))
+        
+        # Its important to use binary mode
+        cachedDetectionsPath = frame.replace(args.framesDir, args.cacheDir).replace('.png', '')
+        results = None
+        try:
+            detectionsfile = open(cachedDetectionsPath, 'rb')     
+            results = pickle.load(detectionsfile)
+            detectionsfile.close()
+            print(f'for {frame} cached detections found')
+        except:
+            results = inference_with_sahi(image)
+            
+            dbfile = open(cachedDetectionsPath, 'ab')
+            pickle.dump(results, dbfile)                     
+            dbfile.close()
+            
+            print(f'for {frame} cached detections not found, new cached detections saved')
+        
+        drawPredictionsOnImage(image, droneImage, results)
+        cv2.imwrite(f'detections_{i}.png',droneImage)
+        
     # results1 = inference_with_sahi(image1)
     # results2 = inference_with_sahi(image2)
     # results3 = inference_with_sahi(image3)
     # results4 = inference_with_sahi(image4)
     
-    # drawPredictionsOnImage(image, results)
-    # cv2.imwrite('image.png',cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
     
     # drawPredictionsOnImage(image1, results1)
     # drawPredictionsOnImage(image2, results2)
