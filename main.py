@@ -12,9 +12,9 @@ import numpy as np
 from sahi.models.yolov8 import Yolov8DetectionModel
 from sahi.predict import get_sliced_prediction
 from SuperGluePretrainedNetwork.models.matching import Matching
-import time
 from kornia.feature import LoFTR
 import pickle
+from deep_sort_realtime.deepsort_tracker import DeepSort
 
 model_path = 'car_detection_model.pt'
 model_conf = 0.65
@@ -53,7 +53,7 @@ config = {
 SuperGlueMatcher = Matching(config).eval().to(device)
 LoFTRMatcher = LoFTR(pretrained="outdoor")
 
-do_match = True
+tracker = DeepSort(max_age=50)
 
 model = Yolov8DetectionModel(
         model_path = model_path,
@@ -75,12 +75,12 @@ def inference_with_sahi(img):
 #this lets us determine where to grab the images and meta data
 def parseArgs():
     parser = argparse.ArgumentParser(description='Collect values to determine GPS position')
-    parser.add_argument('--framesDir', type=str, default='isoData/images', help='where to get drone images from')
-    parser.add_argument('--dataDir', type=str, default='isoData/params', help='where to get drone data from for each frame')
-    parser.add_argument('--cacheDir', type=str, default='isoData/cachedDetections', help='where to cache detections for each frame')
-    # parser.add_argument('--framesDir', type=str, default='sampleData/images', help='where to get drone images from')
-    # parser.add_argument('--dataDir', type=str, default='sampleData/params', help='where to get drone data from for each frame')
-    # parser.add_argument('--cacheDir', type=str, default='sampleData/cachedDetections', help='where to cache detections for each frame')
+    # parser.add_argument('--framesDir', type=str, default='sampleTrackingTestData/images', help='where to get drone images from')
+    # parser.add_argument('--dataDir', type=str, default='sampleTrackingTestData/params', help='where to get drone data from for each frame')
+    # parser.add_argument('--cacheDir', type=str, default='sampleTrackingTestData/cachedDetections', help='where to cache detections for each frame')
+    parser.add_argument('--framesDir', type=str, default='sampleData/images', help='where to get drone images from')
+    parser.add_argument('--dataDir', type=str, default='sampleData/params', help='where to get drone data from for each frame')
+    parser.add_argument('--cacheDir', type=str, default='sampleData/cachedDetections', help='where to cache detections for each frame')
     parser.add_argument('--filterCars', type=bool, default=True, help='whether or not to filter cars')
     parser.add_argument('--filterRoads', type=bool, default=True, help='whether or not to filter roads')
     parser.add_argument('--SuperGlue', type=bool, default=True, help='True for SuperGlue, False for LoFTR')
@@ -163,28 +163,6 @@ def createDetectionsMask(detectionsMaskPath, detectionImageShape, originalImageS
     mask = cv2.resize(mask.astype('float32'), (w_new, h_new))
     
     cv2.imwrite(detectionsMaskPath, mask)
-
-def rotatePoint(x, y, height, width, angle):
-    image_center = (width/2, height/2) # getRotationMatrix2D needs coordinates in reverse order (width, height) compared to shape
-
-    rotation_mat = cv2.getRotationMatrix2D(image_center, -angle, 1.)
-
-    # rotation calculates the cos and sin, taking absolutes of those.
-    abs_cos = abs(rotation_mat[0,0]) 
-    abs_sin = abs(rotation_mat[0,1])
-
-    # find the new width and height bounds
-    bound_w = int(height * abs_sin + width * abs_cos)
-    bound_h = int(height * abs_cos + width * abs_sin)
-
-    # subtract old image center (bringing image back to origo) and adding the new image center coordinates
-    rotation_mat[0, 2] += bound_w/2 - image_center[0]
-    rotation_mat[1, 2] += bound_h/2 - image_center[1]
-
-    # rotate image with the new bounds and translated rotation matrix
-    rotated_point = rotation_mat.dot(np.array((x, y) + (1,)))
-    newX, newY = int(rotated_point[0]), int(rotated_point[1])
-    return newX, newY, bound_h, bound_w
 
 def rotateImage(image, angle):
     height, width = image.shape[:2] # image shape has 3 dimensions
@@ -315,12 +293,12 @@ def findHomographyUsingNN(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, ro
     if args.filterCars:
         mkpts1, mkpts0 = applyMaskToPoints(detectionsMaskPath, mkpts1, mkpts0)
     
-    src = np.float32(mkpts0).reshape(-1,1,2)
-    for p in src:
-        cv2.circle(image0, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
-    cv2.imshow('original',image0)
+    # src = np.float32(mkpts0).reshape(-1,1,2)
+    # for p in src:
+    #     cv2.circle(image0, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
+    # cv2.imshow('original',image0)
     
-    image0_original = cv2.imread(srcPath)
+    # image0_original = cv2.imread(srcPath)
     
     # unscale points
     mkpts0[:,0] = mkpts0[:,0] * w_old / opt['resize'][0]
@@ -334,10 +312,10 @@ def findHomographyUsingNN(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, ro
     src = np.float32(mkpts0).reshape(-1,1,2)
     dst = np.float32(mkpts1).reshape(-1,1,2)
     
-    for p in src:
-        cv2.circle(image0_original, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
-    cv2.imshow('new',image0_original)
-    cv2.waitKey()
+    # for p in src:
+    #     cv2.circle(image0_original, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
+    # cv2.imshow('new',image0_original)
+    # cv2.waitKey()
         
     # mask = cv2.imread(maskPath, cv2.IMREAD_UNCHANGED)
     # image1[mask < 100] = (0,0,0)
@@ -396,6 +374,40 @@ def calculateGPSPosOfObject(center, imgPixelCenter, pos):
     
     return (ycord, xcord)
     
+def getPixelPositionInMapImage(minx, miny, maxx, maxy, H):
+    xDet = minx + ((maxx - minx) / 2)
+    yDet = miny + ((maxy - miny) / 2)
+    
+    positionInOriginal = np.array([xDet, yDet, 1]).T
+    positionInMap = np.matmul(H, positionInOriginal)
+    
+    # make x, y homogeneous
+    x, y = positionInMap[0] / positionInMap[2], positionInMap[1] / positionInMap[2]
+    
+    return (int(x), int(y))
+    
+def convertPredictionsToImageSpace(minx, miny, maxx, maxy, originalImg_w, originalImg_h):
+    minx = originalImg_w * minx / dimOfImage    
+    maxx = originalImg_w * maxx / dimOfImage    
+    miny = originalImg_h * miny / dimOfImage    
+    maxy = originalImg_h * maxy / dimOfImage
+    return minx, miny, maxx, maxy
+    
+def getRandomColors(numColors=500):
+    rng = np.random.default_rng()
+    colorValues = rng.choice(16777215, numColors, replace=False)
+    return [hex(color).replace('0x', '#') for color in colorValues]
+    
+def drawPositionsOnMap(setsOfFrames: dict, colors, carMap, saveFileName):
+    for setNum in setsOfFrames:
+        for track_id in setsOfFrames[setNum]:
+            
+            positions = setsOfFrames[setNum][track_id]
+            
+            if len(positions) > 1:
+                for pos in positions:
+                    folium.CircleMarker(pos, radius=1, color=colors[track_id], fill_color=colors[track_id]).add_to(carMap)
+
 def main():
     args = parseArgs()
     carsText = 'filtering_cars' if args.filterCars else 'not_filtering_cars'
@@ -411,13 +423,15 @@ def main():
     pos, _  = getParams(firstPosFile)
     grabNewGoogleMapsImage(pos, mapPath, mapsMaskPath)
     
-    map = folium.Map(location=[float(pos[0]), float(pos[1])], zoom_start=20, 
+    carMap = folium.Map(location=[float(pos[0]), float(pos[1])], zoom_start=20, 
                 tiles='cartodbpositron', width=1280, height=960)
     
     lastUpdatedPos = pos
+    colors = getRandomColors()
+    setIdx = 0
+    setsOfFrames = dict()
+    setsOfFrames[0] = dict()
     
-    colors= ['#0080bb','#aa0000', '#00aa00', '#aaaa00', '#999999', '#010101', '#8000bb']
-    colorIdx = 0
     for i, frame in enumerate(frameFiles):
         
         fileFound = True
@@ -433,10 +447,17 @@ def main():
         
         if fileFound:
             if googleMapsImageNeedsToUpdate(lastUpdatedPos, pos):
+                setIdx += 1
+                
                 print('grabbing new google maps image')
                 grabNewGoogleMapsImage(pos, mapPath, mapsMaskPath)
-                colorIdx += 1
                 lastUpdatedPos = pos
+                
+                colors = getRandomColors()
+                
+                setsOfFrames[setIdx] = dict()
+                
+                tracker.delete_all_tracks()
             
             droneImage = cv2.imread(frame)
             
@@ -454,35 +475,35 @@ def main():
             
             numCars = 0
             
-            originalImage = cv2.imread(frame)
-            
-            originalImage = rotateImage(originalImage, rot)
-            
+            resultsList = []
+            # loop over the detections
             for result in results.object_prediction_list:
-                xDet = result.bbox.minx + ((result.bbox.maxx - result.bbox.minx) / 2)
-                yDet = result.bbox.miny + ((result.bbox.maxy - result.bbox.miny) / 2)
-                
-                xOriginalImage = originalImg_w * xDet / dimOfImage
-                yOriginalImage = originalImg_h * yDet / dimOfImage
-                
-                positionInOriginal = np.array([xOriginalImage, yOriginalImage, 1]).T
-                
-                positionInMap = np.matmul(H, positionInOriginal)
-                
-                # make x, y homogeneous
-                x, y = positionInMap[0] / positionInMap[2], positionInMap[1] / positionInMap[2]
-                
-                center = (int(x), int(y))
-                
-                dis = calculateGPSPosOfObject(center, imgPixelCenter, pos)
-                
-                folium.CircleMarker(dis, radius=1, color=colors[colorIdx], fill_color=colors[colorIdx]).add_to(map)
-                
-                numCars += 1
+                xmin, ymin, xmax, ymax = int(result.bbox.minx), int(result.bbox.miny), int(result.bbox.maxx), int(result.bbox.maxy)
+                xmin, ymin, xmax, ymax = convertPredictionsToImageSpace(xmin, ymin, xmax, ymax, originalImg_w, originalImg_h)
+                resultsList.append([[xmin, ymin, xmax - xmin, ymax - ymin], str(result.score.value), result.category])
+            
+            tracks = tracker.update_tracks(resultsList, frame=droneImage)
+            # loop over the tracks
+            for track in tracks:
+                track_id = int(track.track_id)
+                if track.is_tentative() and track_id not in setsOfFrames[setIdx]:
+                    setsOfFrames[setIdx][track_id] = []
+                # if the track is not confirmed, ignore it
+                if (track.is_confirmed() or track.is_tentative()) and track.time_since_update < 1:
+                    ltrb = track.to_ltrb()
+                    xmin, ymin, xmax, ymax = int(ltrb[0]), int(ltrb[1]), int(ltrb[2]), int(ltrb[3])
+                    
+                    center = getPixelPositionInMapImage(xmin, ymin, xmax, ymax, H)
+                    dis = calculateGPSPosOfObject(center, imgPixelCenter, pos)
+                    
+                    setsOfFrames[setIdx][track_id].append(dis)
+                    
+                    numCars += 1
                 
             print(f'found {numCars} cars in {frame}')
         
-    map.save(saveFileName)
+    drawPositionsOnMap(setsOfFrames, colors, carMap, saveFileName)
+    carMap.save(saveFileName)
 
 if __name__ == "__main__":
     main()
