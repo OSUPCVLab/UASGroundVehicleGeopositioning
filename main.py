@@ -1,4 +1,5 @@
 import math
+import os
 import cv2
 import requests
 import argparse
@@ -74,12 +75,15 @@ def inference_with_sahi(img):
 #this lets us determine where to grab the images and meta data
 def parseArgs():
     parser = argparse.ArgumentParser(description='Collect values to determine GPS position')
-    parser.add_argument('--framesDir', type=str, default='sampleData/images', help='where to get drone images from')
-    parser.add_argument('--dataDir', type=str, default='sampleData/params', help='where to get drone data from for each frame')
-    parser.add_argument('--cacheDir', type=str, default='sampleData/cachedDetections', help='where to cache detections for each frame')
+    parser.add_argument('--framesDir', type=str, default='isoData/images', help='where to get drone images from')
+    parser.add_argument('--dataDir', type=str, default='isoData/params', help='where to get drone data from for each frame')
+    parser.add_argument('--cacheDir', type=str, default='isoData/cachedDetections', help='where to cache detections for each frame')
+    # parser.add_argument('--framesDir', type=str, default='sampleData/images', help='where to get drone images from')
+    # parser.add_argument('--dataDir', type=str, default='sampleData/params', help='where to get drone data from for each frame')
+    # parser.add_argument('--cacheDir', type=str, default='sampleData/cachedDetections', help='where to cache detections for each frame')
     parser.add_argument('--filterCars', type=bool, default=True, help='whether or not to filter cars')
     parser.add_argument('--filterRoads', type=bool, default=True, help='whether or not to filter roads')
-    parser.add_argument('--SuperGlue', type=bool, default=False, help='True for SuperGlue, False for LoFTR')
+    parser.add_argument('--SuperGlue', type=bool, default=True, help='True for SuperGlue, False for LoFTR')
 
     args = parser.parse_args()
     print('directory with frames: ', args.framesDir)
@@ -151,7 +155,7 @@ def createDetectionsMask(detectionsMaskPath, detectionImageShape, originalImageS
     mask = cv2.resize(mask, (originalImageShape[1], originalImageShape[0]))
     
     if rotation != 0:
-        mask = rotateImage(mask, rotation)
+        mask, _ = rotateImage(mask, rotation)
     
     w_new, h_new = resize[0], resize[1]
     h_old, w_old = mask.shape
@@ -202,7 +206,7 @@ def rotateImage(image, angle):
 
     # rotate image with the new bounds and translated rotation matrix
     rotated_image = cv2.warpAffine(image, rotation_mat, (bound_w, bound_h))
-    return rotated_image
+    return rotated_image, rotation_mat
 
 #this checks to see if the google maps image needs to be updated
 def googleMapsImageNeedsToUpdate(lastUpdatedPos, pos):
@@ -218,8 +222,11 @@ def findFiles(framesDir):
 def getImageAsTensor(path, device, resize, rotation):
     image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     
+    rot_mat = np.array([[1.0, 0.0, 0.0],
+                        [-0.0, 1.0, 0.0]])
+    
     if rotation != 0:
-        image = rotateImage(image, rotation)
+        image, rot_mat = rotateImage(image, rotation)
     
     w_new, h_new = resize[0], resize[1]
     h_old, w_old = image.shape
@@ -228,7 +235,7 @@ def getImageAsTensor(path, device, resize, rotation):
 
     imageAsTensor = torch.from_numpy(image/255.0).float()[None, None].to(device)
     
-    return image.astype('uint8'), imageAsTensor
+    return image.astype('uint8'), imageAsTensor, rot_mat, h_old, w_old
 
 # this takes a mask, the matching points, and the points to which the mask will be applied to
 def applyMaskToPoints(maskPath, matchingPoints, pointsToApplyMaskTo):
@@ -277,11 +284,16 @@ def keyPointsWithLoFTR(batch):
     
     return mkpts0, mkpts1
 
+def getUnrotationMat(rot_mat):
+    padded = np.array([rot_mat[0,:], rot_mat[1,:], [0.0,0.0,1.0]])
+    inv_rot = np.linalg.inv(padded.astype(np.float32)).astype(np.float32)[0:2,:]
+    return inv_rot
+
 #this finds the key points and then calculates the homography
 def findHomographyUsingNN(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, rot, args):
-    image0, img0 = getImageAsTensor(
+    image0, img0, rot_0, h_old, w_old = getImageAsTensor(
         srcPath, device, opt['resize'], rot)
-    image1, img1 = getImageAsTensor(
+    image1, img1, _, _, _ = getImageAsTensor(
         dstPath, device, opt['resize'], 0)
    
     batch = {'image0': img0, 'image1': img1}
@@ -297,16 +309,36 @@ def findHomographyUsingNN(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, ro
     # mkpts0 = np.concatenate((mkpts0SG, mkpts0LFTR))
     # mkpts1 = np.concatenate((mkpts1SG, mkpts1LFTR))
     
-    
     # apply masks to matching points
     if args.filterRoads:
         mkpts0, mkpts1 = applyMaskToPoints(mapsMaskPath, mkpts0, mkpts1)
     if args.filterCars:
         mkpts1, mkpts0 = applyMaskToPoints(detectionsMaskPath, mkpts1, mkpts0)
-        
+    
+    src = np.float32(mkpts0).reshape(-1,1,2)
+    for p in src:
+        cv2.circle(image0, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
+    cv2.imshow('original',image0)
+    
+    image0_original = cv2.imread(srcPath)
+    
+    # unscale points
+    mkpts0[:,0] = mkpts0[:,0] * w_old / opt['resize'][0]
+    mkpts0[:,1] = mkpts0[:,1] * w_old / opt['resize'][1]
+    
+    # unrotate points
+    unrot_mat = getUnrotationMat(rot_0)
+    mkpts0WithOnes = np.append(mkpts0,np.ones([mkpts0.shape[0],1]),1)
+    mkpts0 = np.matmul(unrot_mat, mkpts0WithOnes.T).T
+    
     src = np.float32(mkpts0).reshape(-1,1,2)
     dst = np.float32(mkpts1).reshape(-1,1,2)
     
+    for p in src:
+        cv2.circle(image0_original, (int(p[0,0]), int(p[0,1])), 3, (255,5,255), 3)
+    cv2.imshow('new',image0_original)
+    cv2.waitKey()
+        
     # mask = cv2.imread(maskPath, cv2.IMREAD_UNCHANGED)
     # image1[mask < 100] = (0,0,0)
     # for p in dst:
@@ -325,6 +357,26 @@ def findHomographyUsingNN(srcPath, dstPath, mapsMaskPath, detectionsMaskPath, ro
     H, _ = cv2.findHomography(src, dst, cv2.RANSAC, 5)
     
     return H
+
+def getDetections(cachedDetectionsPath, frame, image):
+    results = None
+    if os.path.isfile(cachedDetectionsPath):
+        detectionsfile = open(cachedDetectionsPath, 'rb')     
+        results = pickle.load(detectionsfile)
+        detectionsfile.close()
+    
+        print(f'for {frame} cached detections found')
+    
+    else:
+        results = inference_with_sahi(image)
+        
+        detectionsfile = open(cachedDetectionsPath, 'ab')
+        pickle.dump(results, detectionsfile)                     
+        detectionsfile.close()
+        
+        print(f'for {frame} cached detections not found, new cached detections saved')
+    
+    return results
 
 #this calculates the GPS position using pixel positions and the expected image size
 def calculateGPSPosOfObject(center, imgPixelCenter, pos):
@@ -394,53 +446,31 @@ def main():
             
             # Its important to use binary mode
             cachedDetectionsPath = frame.replace(args.framesDir, args.cacheDir).replace('.png', '')
-            results = None
-            try:
-                detectionsfile = open(cachedDetectionsPath, 'rb')     
-                results = pickle.load(detectionsfile)
-                detectionsfile.close()
-                print(f'for {frame} cached detections found')
-            except:
-                results = inference_with_sahi(image)
-                
-                dbfile = open(cachedDetectionsPath, 'ab')
-                pickle.dump(results, dbfile)                     
-                dbfile.close()
-                
-                print(f'for {frame} cached detections not found, new cached detections saved')
+            results = getDetections(cachedDetectionsPath, frame, image)
             
             createDetectionsMask(detectionsMaskPath, image.shape[0:2], droneImage.shape[0:2], results.object_prediction_list, opt['resize'], rot)
             
             H = findHomographyUsingNN(frame, mapPath, mapsMaskPath, detectionsMaskPath, rot, args)
             
-            c = 0
+            numCars = 0
             
-            mapImage = cv2.imread(mapPath, cv2.IMREAD_UNCHANGED)
             originalImage = cv2.imread(frame)
             
             originalImage = rotateImage(originalImage, rot)
             
             for result in results.object_prediction_list:
-                x1 = result.bbox.minx + ((result.bbox.maxx - result.bbox.minx) / 2)
-                y1 = result.bbox.miny + ((result.bbox.maxy - result.bbox.miny) / 2)
+                xDet = result.bbox.minx + ((result.bbox.maxx - result.bbox.minx) / 2)
+                yDet = result.bbox.miny + ((result.bbox.maxy - result.bbox.miny) / 2)
                 
-                x1 = originalImg_w * x1 / dimOfImage
-                y1 = originalImg_h * y1 / dimOfImage
+                xOriginalImage = originalImg_w * xDet / dimOfImage
+                yOriginalImage = originalImg_h * yDet / dimOfImage
                 
-                # rotate the detections
-                x1, y1, bound_h, bound_w = rotatePoint(x1, y1, originalImg_h, originalImg_w, rot)
+                positionInOriginal = np.array([xOriginalImage, yOriginalImage, 1]).T
                 
-                # scale the detections
-                w_new, h_new = opt['resize'][0], opt['resize'][1]
-                h_old, w_old = bound_h, bound_w
-                h_new = int(h_old * w_new / w_old)
+                positionInMap = np.matmul(H, positionInOriginal)
                 
-                x1 = x1 * w_new / w_old
-                y1 = y1 * h_new / h_old
-                
-                # compute new pixel positions using homography
-                x = (x1*H[0,0] + y1*H[0,1] + H[0,2])/(x1*H[2,0] + y1*H[2,1] + H[2,2])
-                y = (x1*H[1,0] + y1*H[1,1] + H[1,2])/(x1*H[2,0] + y1*H[2,1] + H[2,2])
+                # make x, y homogeneous
+                x, y = positionInMap[0] / positionInMap[2], positionInMap[1] / positionInMap[2]
                 
                 center = (int(x), int(y))
                 
@@ -448,9 +478,9 @@ def main():
                 
                 folium.CircleMarker(dis, radius=1, color=colors[colorIdx], fill_color=colors[colorIdx]).add_to(map)
                 
-                c += 1
+                numCars += 1
                 
-            print(f'found {c} cars in {frame}')
+            print(f'found {numCars} cars in {frame}')
         
     map.save(saveFileName)
 
