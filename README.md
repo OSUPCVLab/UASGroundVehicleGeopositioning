@@ -1,4 +1,5 @@
 # VehicleGeopositioning
+Note that this hasn't been updated in a while, hopefully I will return to update it soon
 
 ## Set up
 ### Copy this Repo and SuperGlue's repo
